@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 
 app = FastAPI(
-    title="My FastAPI Project",
-    description="My REST API",
+    title="GridVault BackendAPI",
+    description="REST-API for load profiles",
     version="1.0.0"
 )
 
@@ -19,3 +19,6 @@ async def health():
     return {
         "status": "ok"
     }
+
+
+
