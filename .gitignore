@@ -3,3 +3,5 @@
 /backend/.venv
 
 /backend/app/__pycache__
+
+.DS_STORE
