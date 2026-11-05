@@ -1,7 +1,6 @@
-/Task
-/backend/.agents
-/backend/.venv
+/GridVaultTask
 
-/backend/app/__pycache__
+
+/GridVault/.venv
 
 .DS_STORE
