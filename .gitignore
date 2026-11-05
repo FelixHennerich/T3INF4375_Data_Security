@@ -1,0 +1,5 @@
+/Task
+/backend/.agents
+/backend/.venv
+
+/backend/app/__pycache__
