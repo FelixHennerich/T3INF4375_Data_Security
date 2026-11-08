@@ -2,6 +2,10 @@
 
 /GridVault/.venv
 
+/GridVault/.env
+
+/GridVault/*.db
+
 *__pycache__
 
 .DS_STORE

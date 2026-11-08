@@ -1,7 +1,17 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from gridvault.database import init_db
 from gridvault.routers import admin, analysis, auth, metering, outages
 
-app = FastAPI(title="GridVault")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await init_db()
+    yield
+
+
+app = FastAPI(title="GridVault", lifespan=lifespan)
 
 
 @app.get("/health")
