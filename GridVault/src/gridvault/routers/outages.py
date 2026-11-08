@@ -1,10 +1,6 @@
-"""Outage approval endpoints: four-eyes principle, time-limited, segment-bound (A4, test T4)."""
-
 from fastapi import APIRouter
 
 router = APIRouter(prefix="/outages", tags=["Outage Approval"])
-
-# Declaration only – no implementation yet.
 
 
 @router.post("/approval-requests")

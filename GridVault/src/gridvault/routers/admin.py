@@ -1,10 +1,6 @@
-"""Administrative endpoints: deletion run (A6)."""
-
 from fastapi import APIRouter
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
-
-# Declaration only – no implementation yet.
 
 
 @router.post("/deletion-run")

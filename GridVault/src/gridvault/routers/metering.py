@@ -1,10 +1,6 @@
-"""Metering point and load profile endpoints (A2, A3; tests T2, T5)."""
-
 from fastapi import APIRouter
 
 router = APIRouter(prefix="/metering-points", tags=["Metering Points"])
-
-# Declaration only – no implementation yet.
 
 
 @router.get("")

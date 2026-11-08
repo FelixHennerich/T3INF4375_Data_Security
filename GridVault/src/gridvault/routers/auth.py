@@ -1,10 +1,6 @@
-"""Authentication and session endpoints (A1, test T1)."""
-
 from fastapi import APIRouter
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
-
-# Declaration only – no implementation yet.
 
 
 @router.post("/login")

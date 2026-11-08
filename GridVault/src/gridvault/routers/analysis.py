@@ -1,10 +1,6 @@
-"""Network analysis endpoints (A3, test T3)."""
-
 from fastapi import APIRouter
 
 router = APIRouter(prefix="/analysis", tags=["Network Analysis"])
-
-# Declaration only – no implementation yet.
 
 
 @router.get("/plz/{plz}/hourly-sum")
