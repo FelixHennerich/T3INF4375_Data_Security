@@ -12,8 +12,14 @@
 
 /GridVault/*.db
 
+# runtime audit artifacts (log + anchor are WORM-style state, regenerated per test run)
+/GridVault/audit_trail.log
+/GridVault/audit_anchor/
+
 *__pycache__
 
 .DS_STORE
 
 NEXT_STEPS.md
+
+GridVault/bruno

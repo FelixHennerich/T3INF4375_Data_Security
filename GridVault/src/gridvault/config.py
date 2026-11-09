@@ -12,5 +12,8 @@ class Settings(BaseSettings):
 
     key_dir: str = "keys"
 
+    audit_log_path: str = "audit_trail.log"
+    audit_anchor_dir: str = "audit_anchor"
+
 
 settings = Settings()
