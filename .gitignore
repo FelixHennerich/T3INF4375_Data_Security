@@ -4,8 +4,12 @@
 
 /GridVault/.env
 
+/GridVault/keys/
+
 /GridVault/*.db
 
 *__pycache__
 
 .DS_STORE
+
+NEXT_STEPS.md

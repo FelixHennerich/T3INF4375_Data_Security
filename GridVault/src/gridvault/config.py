@@ -10,5 +10,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./gridvault.db"
 
+    key_dir: str = "keys"
+
 
 settings = Settings()

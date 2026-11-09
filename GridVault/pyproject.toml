@@ -20,6 +20,9 @@ dependencies = [
 [project.scripts]
 gridvault = "gridvault.main:main"
 
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+
 [tool.fastapi]
 entrypoint = "gridvault.main:app"
 
