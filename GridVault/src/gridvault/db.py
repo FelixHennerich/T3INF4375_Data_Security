@@ -58,6 +58,14 @@ class MeteringPoint(Base):
 
     Cleartext: mp_id, tenant, plz, tariff
     Encrypted: name, address, per-data-key
+
+    Why exactly these stay cleartext (A2): mp_id/tenant_id are technical
+    routing identifiers needed to locate and separate rows before any
+    decryption; plz enables cohort queries (A3) without crypto access and
+    is region-level, not unique to a person; tariff is a product parameter,
+    not personal data. None of them reveal identity or behaviour on their
+    own - unlike name/address (direct identifiers) and the hourly values
+    (presence profile), which stay encrypted.
     """
 
     __tablename__ = "metering_points"
@@ -82,7 +90,12 @@ class MeteringPoint(Base):
 
 
 class HourlyReading(Base):
-    """A single hourly consumption value (A2)"""
+    """A single hourly consumption value (A2).
+
+    Timestamp and metering_point_id stay cleartext: they are the row
+    identity needed to build the AAD context (Weg b) before decryption.
+    The consumption value itself is always ciphertext.
+    """
 
     __tablename__ = "hourly_readings"
 

@@ -32,14 +32,16 @@ def create_master_key(
     """Create and persist a fresh 256-bit master key for a tenant."""
     path = _key_path(tenant_code, key_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Key files are 0600; the directory should not be listable by others.
+    os.chmod(path.parent, 0o700)
 
     if path.exists() and not overwrite:
         raise KeyServiceError(f"master key for {tenant_code!r} already exists")
 
     key = secrets.token_bytes(_MASTER_KEY_BYTES)
 
-    # O_EXCL: even with overwrite=True the file is replaced atomically-ish
-    # via write-to-temp + rename to avoid a partially written key file.
+    # Written to a temp file first and moved into place atomically, so a
+    # crash can never leave a partial (and thus corrupt) key file behind.
     tmp_path = path.with_suffix(".key.tmp")
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -59,7 +61,17 @@ def get_master_key(tenant_code: str, key_dir: Path | str | None = None) -> bytes
     if not path.is_file():
         raise KeyServiceError(f"no master key for tenant {tenant_code!r}")
 
-    key = bytes.fromhex(path.read_text(encoding="ascii").strip())
+    # O_NOFOLLOW so a symlinked key file cannot redirect the read.
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise KeyServiceError(f"cannot read master key for {tenant_code!r}") from exc
+    with os.fdopen(fd, "r", encoding="ascii") as fh:
+        data = fh.read().strip()
+    try:
+        key = bytes.fromhex(data)
+    except ValueError as exc:
+        raise KeyServiceError(f"master key for {tenant_code!r} is corrupt") from exc
     if len(key) != _MASTER_KEY_BYTES:
         raise KeyServiceError(f"master key for {tenant_code!r} has wrong length")
     return key

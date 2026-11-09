@@ -19,7 +19,14 @@ class IntegrityViolation(Exception):
 
 
 def build_context(tenant_code: str, mp_id: str, timestamp: datetime | str) -> str:
-    """Stable context string bound into every encryption."""
+    """Stable context string bound into every encryption.
+
+    Kontextbindung via "Weg b": the context is passed as Additional
+    Authenticated Data (AAD) to AES-GCM instead of being written into the
+    plaintext (Weg a). Relocating a valid ciphertext to another row (T5)
+    then fails inside decrypt, without enlarging the stored data - the
+    context is checked by the MAC tag itself. Decision documented for B1.
+    """
     ts = timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp
     return f"{tenant_code}:{mp_id}:{ts}"
 

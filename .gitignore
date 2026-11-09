@@ -6,6 +6,10 @@
 
 /GridVault/keys/
 
+# key files must never be committed, wherever they end up
+*.key
+*.key.tmp
+
 /GridVault/*.db
 
 *__pycache__
