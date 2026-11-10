@@ -1,53 +1,51 @@
 # GridVault
 
 Backend for the DHBW Data Security Programmentwurf (M2, Teil A): a local HTTP API
-that stores smart-meter load profiles with encryption at rest, tenant
-separation, role-based access control and an audit trail.
+that stores smart-meter load profiles with encryption at rest (AES-256-GCM with
+context binding), strict tenant separation, a central authorization gateway,
+role-based output adaptation, a hash-chained audit trail with an external
+anchor, configurable retention deletion and crypto-shredding for customer
+deletion requests.
+
+Runs fully local, no network access and no external services required
+(all crypto primitives from established libraries).
 
 ## Requirements
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 
-## Setup
-
-1. Install dependencies:
-
-   ```bash
-   uv sync
-   ```
-
-2. Create your local configuration file by copying the template:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   The `.env` file is ignored by git and holds local settings such as the
-   database URL (defaults to a local SQLite database `gridvault.db`).
-   Real environment variables take precedence over `.env` entries.
-
-## Run
+## Quick start (fresh clone)
 
 ```bash
-uv run fastapi dev
+uv sync                                   # install dependencies
+cp .env.example .env                       # local config (db url defaults to gridvault.db)
+uv run python scripts/generate_testdata.py # master keys + test dataset (real ciphertexts)
+uv run fastapi dev                         # API at http://127.0.0.1:8000
 ```
 
-The API is served at <http://127.0.0.1:8000>, interactive docs at
-<http://127.0.0.1:8000/docs>. On startup, all database tables are created
-automatically if they do not exist yet.
+On startup all database tables are created automatically. The generator is
+idempotent (drops and rebuilds all tables) and creates missing master keys in
+`keys/` and HMAC keys in `hmac_keys/` (both gitignored, mode 0600).
+
+## Module structure (A9)
+
+| Module | Responsibility |
+| ------ | -------------- |
+| `gridvault/services/keys.py`     | Schlüsseldienst: per-tenant master keys + HMAC pseudonym keys, outside DB and source |
+| `gridvault/services/crypto.py`  | AES-256-GCM with context binding (Weg b: context as AAD), data-key wrapping |
+| `gridvault/services/audit.py`   | Append-only hash chain + anchor mirror (WORM stand-in), data-poor entries by construction |
+| `gridvault/services/sessions.py`| Session lifecycle, only token hashes in the DB |
+| `gridvault/services/gateway.py` | THE central check chain: session -> role -> tenant -> object -> decrypt -> mask/aggregate -> audit |
+| `gridvault/routers/*`           | Transport only - declare parameters, call the gateway, never check or audit themselves |
+
+Runtime artifacts (gitignored, regenerated): `gridvault.db`,
+`audit_trail.log`, `audit_anchor/`, `keys/`, `hmac_keys/`, `backups/`.
 
 ## Test data
 
-Generate the canonical test dataset (2 utilities, 6 users, 8 metering
-points, 24 hourly values each with real ciphertexts):
-
-```bash
-uv run python scripts/generate_testdata.py
-```
-
-Missing master keys in `keys/` are created automatically. The script is
-idempotent: it rebuilds all tables, so re-runs are reproducible.
+Canonical test dataset: 2 utilities, 6 users covering all 5 roles, 8 metering
+points, 24 hourly values each (one full day, deterministic day/night profile).
 
 ### Test users (also used by the Bruno collection in `bruno/`)
 
@@ -60,6 +58,10 @@ idempotent: it rebuilds all tables, so re-runs are reproducible.
 | `leitstelle_swn`  | `Leitstelle-SWN-2026`  | SWN     | leitstelle      | -       |
 | `kunde_swb`       | `Kunde-SWB-2026`       | SWB     | kunde           | SWB-001 |
 
+Passwords are stored as Argon2 hashes only - the plaintext passwords above
+are test credentials and intentionally documented (A9). No real secrets exist
+in this repository.
+
 ### Data layout
 
 | Metering point | Utility | PLZ   | Cohort size in PLZ |
@@ -69,28 +71,98 @@ idempotent: it rebuilds all tables, so re-runs are reproducible.
 | SWB-001..003   | SWB     | 71332 | 3                  |
 | SWB-004        | SWB     | 73431 | 1 (small cell)     |
 
-## B4 test reproduction
+## Reproducing the B4 tests
 
-With the server running (`uv run fastapi dev`):
+With the server running (`uv run fastapi dev`), each test is one command
+(Bruno collection: open `bruno/`, select environment `Localhost`).
+
+### T1 - login wrong then correct (Bruno)
+
+`auth/login_wrong_password` -> 401 without user-existence hint, then
+`auth/login_kunde_swn` -> 200 with role and tenant. Both events appear in
+`audit_trail.log`; verify the chain afterwards (see T6).
+
+### T2 - Abrechnung own / foreign tenant / foreign role (Bruno)
+
+Log in as `abrechnung_swn`, then:
+
+| Request | Expected (B4/T2) |
+| ------- | ---------------- |
+| `metering/get_billing_summary` (SWN-001) | (a) sum + amount, load profile `[NICHT FREIGEGEBEN]` |
+| `metering/get_other_tenant_swb` (SWB-001) | (b) denied |
+| `analysis/hourly_sum_ok` as Abrechnung | (c) denied (Netzanalyst action, role_not_allowed) |
+
+### T3 - cohort k-cell protection and pseudonym export (Bruno)
+
+Log in as `netzanalyst_swn`, then `analysis/hourly_sum_ok` (PLZ 71543, n=3:
+hourly sum), `analysis/hourly_sum_small_cell` (PLZ 71560: rejected with n=1
+and k=3), `analysis/export` (only HMAC pseudonyms).
+
+### T4 - outage approval chain (Bruno)
+
+`login_stoerung_swn` -> `segment_read_without_grant` (denied) ->
+`create_approval_request` (open; the created request_id is written into the
+environment automatically) -> `login_leitstelle_swn` -> `list_open_requests`
+-> `grant_approval` (four-eyes, 30 min validity) -> `login_stoerung_swn` ->
+`segment_read_in_segment` (value visible, name `[HIDDEN]`) -> change PLZ to
+`71560` in the request URL (denied, outside the segment) -> after the grant
+window (shorten via `GRANT_VALIDITY_MINUTES` in `.env`) denied again.
+
+### T5 - swapped ciphertexts (script)
 
 ```bash
-# T5: swap two ciphertexts directly in the DB, read as Abrechnung -> 409
-# naming metering point and timestamp, audit entry printed, then restored
 uv run python scripts/t5_swap_and_read.py
+```
 
-# T6: verify the audit hash chain against the external anchor
-uv run python scripts/verify_audit.py
+Swaps the `enc_value` blobs of two hourly rows of `SWN-001` directly in the
+database, reads the metering point as Abrechnung -> 409 integrity violation
+naming metering point and timestamp, prints the audit entry and restores the
+ciphertexts. B4 reasoning why AEAD alone does not detect the relocation of
+two valid ciphertexts (only the AAD context binding does): see the script
+docstring.
 
-# A6 + A2 bonus (B4 bonus evidence): pull backup copy -> deletion run
-# (dry + real) -> proof the backup still contains the ciphertexts ->
-# crypto-shredding of SWN-001 -> restore the backup -> re-apply the run
+### T6 - audit chain tampering (script)
+
+```bash
+# intact chain + anchor
+uv run python scripts/verify_audit.py            # exit 0
+
+# (a) delete a middle entry -> chain break with line number
+sed -i '' '3d' audit_trail.log
+uv run python scripts/verify_audit.py            # exit 1, line number reported
+
+# (b) truncate the tail -> only the anchor exposes it
+# (restore a middle-entry deletion first, e.g. regenerate data, then)
+head -n 5 audit_trail.log > tmp && mv tmp audit_trail.log
+uv run python scripts/verify_audit.py            # exit 1, TRUNCATED TAIL
+```
+
+Why the hash chain alone cannot detect the cut tail (the attacker removes the
+evidence with it; only the comparison against the external anchor in
+`audit_anchor/` exposes it): see the docstring of `scripts/verify_audit.py`.
+
+### Bonus - deletion + backup evidence (script)
+
+```bash
 uv run python scripts/backup_restore_simulation.py
 ```
 
-The simulation script CLEANS the working dataset (deletion run) and
-crypto-shreddes SWN-001 - regenerate afterwards with
-`uv run python scripts/generate_testdata.py`.
+Pulls a backup copy -> deletion run (dry + real, retention window 30 days) ->
+proof that the previously pulled backup still contains the ciphertexts ->
+crypto-shredding of `SWN-001` (data key destroyed, remaining ciphertext
+unreadable) -> restores the backup (resurrected rows) -> re-applies the
+deletion run and the key destruction. The script CLEANS the working dataset;
+regenerate afterwards with `scripts/generate_testdata.py`.
 
-The remaining tests (T1-T4) are reproduced with the prepared HTTP
-requests in the `bruno/` collection (see `bruno/README.md`), following
-the B4 sequence documented in each request's docs.
+## Test suite
+
+```bash
+uv run pytest tests/ -q   # 97 tests: crypto, audit, auth, gateway hardening (A7/A8), deletion, backup semantics
+uv run ruff check src scripts tests
+```
+
+## Housekeeping
+
+Broken venv (e.g. after moving the project folder): rebuild with
+`rm -rf .venv && uv sync`. The `.env` file is gitignored and holds only the
+database URL - real environment variables take precedence.

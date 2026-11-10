@@ -6,13 +6,13 @@
 
 /GridVault/keys/
 
-# key files must never be committed, wherever they end up
 *.key
 *.key.tmp
 
 /GridVault/*.db
 
-# runtime audit artifacts (log + anchor are WORM-style state, regenerated per test run)
+/gridvault.db
+
 /GridVault/audit_trail.log
 /GridVault/audit_anchor/
 /GridVault/backups/
