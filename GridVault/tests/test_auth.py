@@ -14,10 +14,8 @@ def audit_entries(audit_log_path: Path) -> list[dict]:
     return [json.loads(line) for line in audit_log_path.read_text().splitlines()]
 
 
-
-
 class TestLoginT1:
-    async def test_wrong_password_rejected_generically(self, client, audit_log_path):
+    async def test_wrong_password_rejected_generically(self, client):
         r_wrong = await client.post("/auth/login", json=WRONG_PW)
         r_unknown = await client.post("/auth/login", json=UNKNOWN)
         assert r_wrong.status_code == 401
@@ -28,9 +26,7 @@ class TestLoginT1:
         # no session cookie on failure
         assert "set-cookie" not in {k.lower() for k in r_wrong.headers}
 
-    async def test_correct_login_returns_session_with_role_and_tenant(
-        self, client, audit_log_path
-    ):
+    async def test_correct_login_returns_session_with_role_and_tenant(self, client):
         r = await client.post("/auth/login", json=GOOD)
         assert r.status_code == 200
         body = r.json()
@@ -62,18 +58,18 @@ class TestLoginT1:
 
 
 class TestSessionUse:
-    async def test_whoami_roundtrip(self, client, audit_log_path):
+    async def test_whoami_roundtrip(self, client):
         await client.post("/auth/login", json=GOOD)
         r = await client.get("/auth/me")
         assert r.status_code == 200
         assert r.json()["tenant"] == "SWN"
         assert r.json()["role"] == "kunde"
 
-    async def test_whoami_without_session_denied(self, client, audit_log_path):
+    async def test_whoami_without_session_denied(self, client):
         r = await client.get("/auth/me")
         assert r.status_code == 401
 
-    async def test_logout_invalidates_session(self, client, audit_log_path):
+    async def test_logout_invalidates_session(self, client):
         await client.post("/auth/login", json=GOOD)
         assert (await client.post("/auth/logout")).status_code == 200
         # cookie was told to expire and the server row is gone
@@ -90,12 +86,12 @@ class TestSessionUse:
         }
         assert "session_expired" in reasons
 
-    async def test_unknown_cookie_is_rejected(self, client, audit_log_path):
+    async def test_unknown_cookie_is_rejected(self, client):
         await client.post("/auth/login", json=GOOD)
         client.cookies.set("gridvault_session", "forged-token")
         assert (await client.get("/auth/me")).status_code == 401
 
-    async def test_deactivated_user_session_dies(self, client, audit_log_path):
+    async def test_deactivated_user_session_dies(self, client):
         await client.post("/auth/login", json=GOOD)
         # flip is_active directly in the DB (permission removal, A7)
         from gridvault.database import SessionFactory
@@ -119,7 +115,6 @@ class TestSessionUse:
 class TestAuditStaysIntact:
     async def test_audit_chain_verifies_after_logins(self, client, audit_log_path):
         import importlib.util
-        from pathlib import Path
 
         await client.post("/auth/login", json=WRONG_PW)
         await client.post("/auth/login", json=GOOD)
