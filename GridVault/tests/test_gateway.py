@@ -210,6 +210,27 @@ class TestIntegrityViolation:
         assert integrity, "integrity violation not audited"
         assert integrity[0]["object"] == "mp:SWN-001:2026-10-01T07:00:00"
 
+        # restore the swapped values - later tests need an intact dataset
+        async with SessionFactory() as db:
+            rows = (
+                (
+                    await db.execute(
+                        select(HourlyReading)
+                        .join(MeteringPoint, MeteringPoint.id == HourlyReading.metering_point_id)
+                        .where(MeteringPoint.mp_id == "SWN-001")
+                        .where(
+                            HourlyReading.timestamp.in_(
+                                [datetime(2026, 10, 1, 7, 0), datetime(2026, 10, 1, 8, 0)]
+                            )
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            rows[0].enc_value, rows[1].enc_value = rows[1].enc_value, rows[0].enc_value
+            await db.commit()
+
     async def test_tampered_ciphertext_detected(
         self, client, audit_log_path
     ):
@@ -230,7 +251,8 @@ class TestIntegrityViolation:
                 .scalars()
                 .first()
             )
-            blob = bytearray(reading.enc_value)
+            original = bytes(reading.enc_value)
+            blob = bytearray(original)
             blob[-1] ^= 0x01
             await db.execute(
                 update(HourlyReading)
@@ -243,3 +265,12 @@ class TestIntegrityViolation:
         assert r.status_code == 409
         assert "SWN-001" in r.json()["detail"]
         assert "integrity_violation" in reasons_since(audit_log_path, start)
+
+        # restore the original ciphertext for later tests
+        async with SessionFactory() as db:
+            await db.execute(
+                update(HourlyReading)
+                .where(HourlyReading.id == reading.id)
+                .values(enc_value=original)
+            )
+            await db.commit()

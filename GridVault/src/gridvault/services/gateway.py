@@ -118,6 +118,71 @@ async def authorize(
     return current
 
 
+def _unwrap_data_key(tenant_code: str, mp: MeteringPoint) -> bytes:
+    """Per-metering-point data key, unwrapped with the tenant master key."""
+    return crypto.unwrap_data_key(
+        get_master_key(tenant_code), mp.enc_data_key, f"{tenant_code}:{mp.mp_id}"
+    )
+
+
+async def _load_mp(db: AsyncSession, mp_id: str):
+    """Metering point + owning tenant row, or None (object resolution)."""
+    stmt = (
+        select(MeteringPoint, Tenant)
+        .join(Tenant, Tenant.id == MeteringPoint.tenant_id)
+        .where(MeteringPoint.mp_id == mp_id)
+    )
+    return (await db.execute(stmt)).first()
+
+
+async def _decrypt_hourly(
+    db: AsyncSession,
+    current: CurrentSession,
+    tenant_code: str,
+    mp_id: str,
+    mp_row_id: int,
+    action: str,
+) -> tuple[list[HourlyReading], list[float]]:
+    """Step 5: unwrap the data key and decrypt every hourly value with
+    its context (Weg b). An integrity violation is audited with the
+    exact failing row (mp_id + timestamp) and re-raised."""
+    mp = await db.get(MeteringPoint, mp_row_id)
+    assert mp is not None
+    data_key = _unwrap_data_key(tenant_code, mp)
+    readings = (
+        (
+            await db.execute(
+                select(HourlyReading)
+                .where(HourlyReading.metering_point_id == mp_row_id)
+                .order_by(HourlyReading.timestamp)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    values: list[float] = []
+    for reading in readings:
+        context = crypto.build_context(tenant_code, mp_id, reading.timestamp)
+        try:
+            values.append(float(crypto.decrypt(reading.enc_value, data_key, context)))
+        except crypto.IntegrityViolation:
+            # T5: unlike authorization denials, an integrity violation IS
+            # reported with metering point and timestamp - the reader must
+            # see which row fails. The generic client message does not
+            # apply here; the raised exception carries the bound context.
+            get_audit().log_action(
+                tenant=current.tenant_code,
+                user=user_pseudonym(current.user_id),
+                role=current.role,
+                action=action,
+                object_ref=f"mp:{mp_id}:{reading.timestamp.isoformat()}",
+                result="denied",
+                reason="integrity_violation",
+            )
+            raise
+    return readings, values
+
+
 async def read_meter_point(
     db: AsyncSession, token: str | None, mp_id: str
 ) -> dict:
@@ -131,10 +196,7 @@ async def read_meter_point(
     action = "read_metering_point"
     object_ref = f"mp:{mp_id}"
 
-    stmt = select(MeteringPoint, Tenant).join(Tenant, Tenant.id == MeteringPoint.tenant_id).where(MeteringPoint.mp_id == mp_id)
-    row = (await db.execute(stmt)).first()
-    mp, tenant = (row if row else (None, None))
-
+    row = await _load_mp(db, mp_id)
     # Steps 1-3 (unknown object -> tenant check against None, then step 4).
     current = await authorize(
         db,
@@ -142,10 +204,11 @@ async def read_meter_point(
         action=action,
         allowed_roles={"kunde", "abrechnung"},
         object_ref=object_ref,
-        object_tenant=tenant.code if row else None,
+        object_tenant=row[1].code if row else None,
     )
     if not row:
         _deny(current, action=action, object_ref=object_ref, reason="object_not_found")
+    mp, tenant = row
     assert mp is not None and tenant is not None
 
     # Step 4: object reference - a customer may only read the metering
@@ -153,43 +216,14 @@ async def read_meter_point(
     if current.role == "kunde" and mp.customer_user_id != current.user_id:
         _deny(current, action=action, object_ref=object_ref, reason="not_own_meter")
 
-    # Step 5: decrypt with context check (Weg b AAD). The data key is
-    # unwrapped with the tenant master key and bound to this metering
-    # point; every hourly value is additionally bound to its timestamp.
-    master_key = get_master_key(tenant.code)
-    data_key = crypto.unwrap_data_key(master_key, mp.enc_data_key, f"{tenant.code}:{mp_id}")
+    # Step 5: decrypt with context check (Weg b AAD).
+    data_key = _unwrap_data_key(tenant.code, mp)
     static_context = crypto.build_context(tenant.code, mp_id, "stammdaten")
     name = crypto.decrypt(mp.enc_name, data_key, static_context)
     address = crypto.decrypt(mp.enc_address, data_key, static_context)
-
-    readings = (
-        await db.execute(
-            select(HourlyReading)
-            .where(HourlyReading.metering_point_id == mp.id)
-            .order_by(HourlyReading.timestamp)
-        )
-    ).scalars().all()
-    values: list[float] = []
-    for reading in readings:
-        context = crypto.build_context(tenant.code, mp_id, reading.timestamp)
-        try:
-            values.append(float(crypto.decrypt(reading.enc_value, data_key, context)))
-        except crypto.IntegrityViolation:
-            # T5: unlike authorization denials, an integrity violation IS
-            # reported with metering point and timestamp - the chain is
-            # broken and the reader must see which row failed. The generic
-            # client message does not apply here; the raised exception
-            # carries the bound context. The audit entry names both too.
-            get_audit().log_action(
-                tenant=current.tenant_code,
-                user=user_pseudonym(current.user_id),
-                role=current.role,
-                action=action,
-                object_ref=f"mp:{mp_id}:{reading.timestamp.isoformat()}",
-                result="denied",
-                reason="integrity_violation",
-            )
-            raise
+    readings, values = await _decrypt_hourly(
+        db, current, tenant.code, mp_id, mp.id, action
+    )
 
     # Step 6: role-adapted output. For Abrechnung the single values stay
     # inside this function - only the aggregate leaves it.
@@ -219,6 +253,96 @@ async def read_meter_point(
         }
 
     # Step 7 (success): audit emitted here, never in the route.
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="success",
+        reason="authorized",
+    )
+    return result
+
+
+async def list_meter_points(db: AsyncSession, token: str | None) -> list[dict]:
+    """Cleartext directory of metering points via the gateway (A3).
+
+    Abrechnung: all metering points of the own tenant. Kunde: only the
+    own one. Output carries ONLY the cleartext fields - names and
+    addresses are not decrypted for a directory listing at all (A8,
+    data minimization). For a list the tenant check (step 3) and the
+    object reference (step 4) collapse into the query scope.
+    """
+    action = "list_metering_points"
+    object_ref = "mp_list"
+
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"kunde", "abrechnung"},
+        object_ref=object_ref,
+    )
+
+    stmt = select(MeteringPoint).where(MeteringPoint.tenant_id == current.tenant_id)
+    if current.role == "kunde":
+        # step 4 for the customer: exactly the own metering point
+        stmt = stmt.where(MeteringPoint.customer_user_id == current.user_id)
+    rows = (await db.execute(stmt.order_by(MeteringPoint.mp_id))).scalars().all()
+
+    result = [
+        {"mp_id": row.mp_id, "tenant": current.tenant_code, "plz": row.plz, "tariff": row.tariff}
+        for row in rows
+    ]
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="success",
+        reason="authorized",
+    )
+    return result
+
+
+async def list_hourly_readings(
+    db: AsyncSession, token: str | None, mp_id: str
+) -> list[dict]:
+    """Hourly values via the gateway - customer role only (A3/A7).
+
+    Single values are purpose-bound to the customer; every other role is
+    denied here (e.g. Abrechnung, which only ever receives the sum).
+    """
+    action = "read_metering_readings"
+    object_ref = f"mp:{mp_id}"
+
+    row = await _load_mp(db, mp_id)
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"kunde"},
+        object_ref=object_ref,
+        object_tenant=row[1].code if row else None,
+    )
+    if not row:
+        _deny(current, action=action, object_ref=object_ref, reason="object_not_found")
+    mp, tenant = row
+
+    if mp.customer_user_id != current.user_id:
+        _deny(current, action=action, object_ref=object_ref, reason="not_own_meter")
+
+    readings, values = await _decrypt_hourly(
+        db, current, tenant.code, mp_id, mp.id, action
+    )
+    result = [
+        {"timestamp": reading.timestamp.isoformat(), "kwh": value}
+        for reading, value in zip(readings, values)
+    ]
+
     get_audit().log_action(
         tenant=current.tenant_code,
         user=user_pseudonym(current.user_id),

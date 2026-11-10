@@ -68,3 +68,20 @@ idempotent: it rebuilds all tables, so re-runs are reproducible.
 | SWN-004        | SWN     | 71560 | 1 (small cell)     |
 | SWB-001..003   | SWB     | 71332 | 3                  |
 | SWB-004        | SWB     | 73431 | 1 (small cell)     |
+
+## B4 test reproduction
+
+With the server running (`uv run fastapi dev`):
+
+```bash
+# T5: swap two ciphertexts directly in the DB, read as Abrechnung -> 409
+# naming metering point and timestamp, audit entry printed, then restored
+uv run python scripts/t5_swap_and_read.py
+
+# T6: verify the audit hash chain against the external anchor
+uv run python scripts/verify_audit.py
+```
+
+The remaining tests (T1-T4) are reproduced with the prepared HTTP
+requests in the `bruno/` collection (see `bruno/README.md`), following
+the B4 sequence documented in each request's docs.

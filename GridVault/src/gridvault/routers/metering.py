@@ -9,10 +9,13 @@ router = APIRouter(prefix="/metering-points", tags=["Metering Points"])
 
 
 @router.get("")
-async def list_metering_points(request: Request) -> list[dict] | None:
+async def list_metering_points(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> list[dict]:
     """Metering points visible to the caller (customer: only their own).
     Returns only cleartext fields: metering point ID, utility, postcode,
-    tariff. Wired via the gateway in M6."""
+    tariff. A directory listing never decrypts names or addresses."""
+    return await gateway.list_meter_points(db, request.cookies.get(COOKIE_NAME))
 
 
 @router.get("/{mp_id}")
@@ -31,7 +34,15 @@ async def get_metering_point(
 
 
 @router.get("/{mp_id}/readings")
-async def get_readings(mp_id: str, request: Request) -> list[dict] | None:
-    """Hourly values (customer role, own metering point only).
+async def get_readings(
+    mp_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> list[dict]:
+    """Hourly values via the gateway - customer role only (A3/A7):
+    single values are purpose-bound to the customer.
+
     Decryption is context-checked: each ciphertext is bound to metering
-    point and timestamp (T5). Wired via the gateway in M6."""
+    point and timestamp (Weg b AAD), so a swapped ciphertext is reported
+    as an integrity violation naming both (T5)."""
+    return await gateway.list_hourly_readings(
+        db, request.cookies.get(COOKIE_NAME), mp_id
+    )
