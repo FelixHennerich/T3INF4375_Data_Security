@@ -3,13 +3,14 @@ import hmac as hmac_lib
 import json as json_lib
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gridvault.config import settings
 from gridvault.db import (
     AnalysisExport,
     ApprovalRequest,
+    DeletionRun,
     HourlyReading,
     MeteringPoint,
     Tenant,
@@ -833,3 +834,172 @@ async def read_outage_segment(
         reason="authorized",
     )
     return result
+
+
+async def run_deletion(
+    db: AsyncSession,
+    token: str | None,
+    *,
+    retention_days: int,
+    exceptions: list[dict],
+    dry_run: bool,
+) -> dict:
+    """A6: configurable deletion run for load profiles and analysis
+    exports, scoped to the caller's own tenant.
+
+    """
+    action = "deletion_run"
+    object_ref = "deletion_run"
+    exempt_mp_ids = {exc["mp_id"] for exc in exceptions}
+
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"abrechnung"},
+        object_ref=object_ref,
+    )
+    now = _now()
+    due_before = now - timedelta(days=retention_days)
+
+    due_reading_ids = (
+        select(HourlyReading.id)
+        .join(MeteringPoint, MeteringPoint.id == HourlyReading.metering_point_id)
+        .where(
+            MeteringPoint.tenant_id == current.tenant_id,
+            HourlyReading.timestamp < due_before,
+        )
+    )
+    if exempt_mp_ids:
+        due_reading_ids = due_reading_ids.where(
+            MeteringPoint.mp_id.not_in(exempt_mp_ids)
+        )
+
+    if dry_run:
+        readings_due = (
+            await db.execute(due_reading_ids)
+        ).scalars().all()
+        exports_due = (
+            await db.execute(
+                select(AnalysisExport.id).where(
+                    AnalysisExport.tenant_id == current.tenant_id,
+                    AnalysisExport.retention_until <= now,
+                )
+            )
+        ).scalars().all()
+        get_audit().log_action(
+            tenant=current.tenant_code,
+            user=user_pseudonym(current.user_id),
+            role=current.role,
+            action=action,
+            object_ref="deletion_run:dry",
+            result="success",
+            reason="dry_run",
+        )
+        return {
+            "dry_run": True,
+            "retention_days": retention_days,
+            "readings_due": len(readings_due),
+            "exports_due": len(exports_due),
+            "exceptions": exceptions,
+        }
+
+    readings_result = await db.execute(
+        delete(HourlyReading).where(HourlyReading.id.in_(due_reading_ids))
+    )
+    exports_result = await db.execute(
+        delete(AnalysisExport).where(
+            AnalysisExport.tenant_id == current.tenant_id,
+            AnalysisExport.retention_until <= now,
+        )
+    )
+
+    started = _now()
+    run_row = DeletionRun(
+        started_at=started,
+        finished_at=_now(),
+        loads_deleted=readings_result.rowcount or 0,
+        exports_deleted=exports_result.rowcount or 0,
+        retention_exceptions=";".join(
+            f"{exc['mp_id']}:{exc['reason']}" for exc in exceptions
+        ),
+    )
+    db.add(run_row)
+    await db.commit()
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=f"deletion_run:{run_row.id}",
+        result="success",
+        reason="retention_over",
+    )
+    return {
+        "dry_run": False,
+        "retention_days": retention_days,
+        "readings_deleted": run_row.loads_deleted,
+        "exports_deleted": run_row.exports_deleted,
+        "exceptions": exceptions,
+        "deletion_run_id": run_row.id,
+    }
+
+
+async def delete_customer_data_key(
+    db: AsyncSession, token: str | None, mp_id: str
+) -> dict:
+    """A2 bonus: customer deletion via key destruction (crypto-shredding).
+
+    """
+    action = "delete_customer_data"
+    object_ref = f"mp:{mp_id}"
+
+    row = await _load_mp(db, mp_id)
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"kunde", "abrechnung"},
+        object_ref=object_ref,
+        object_tenant=row[1].code if row else None,
+    )
+    if not row:
+        _deny(current, action=action, object_ref=object_ref, reason="object_not_found")
+    mp, _tenant = row
+
+    # Step 4: a customer may only destroy the key of their own meter.
+    if current.role == "kunde" and mp.customer_user_id != current.user_id:
+        _deny(current, action=action, object_ref=object_ref, reason="not_own_meter")
+
+    rows_remaining = (
+        len(
+            (
+                await db.execute(
+                    select(HourlyReading.id).where(
+                        HourlyReading.metering_point_id == mp.id
+                    )
+                )
+            ).scalars().all()
+        )
+    )
+
+    # Destruction: an empty blob can never unwrap to a valid key again.
+    mp.enc_data_key = b""
+    await db.commit()
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="success",
+        reason="deletion_request",
+    )
+    return {
+        "mp_id": mp_id,
+        "data_key_destroyed": True,
+        "ciphertext_rows_remaining": rows_remaining,
+        "readable": False,
+    }

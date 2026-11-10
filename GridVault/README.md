@@ -80,7 +80,16 @@ uv run python scripts/t5_swap_and_read.py
 
 # T6: verify the audit hash chain against the external anchor
 uv run python scripts/verify_audit.py
+
+# A6 + A2 bonus (B4 bonus evidence): pull backup copy -> deletion run
+# (dry + real) -> proof the backup still contains the ciphertexts ->
+# crypto-shredding of SWN-001 -> restore the backup -> re-apply the run
+uv run python scripts/backup_restore_simulation.py
 ```
+
+The simulation script CLEANS the working dataset (deletion run) and
+crypto-shreddes SWN-001 - regenerate afterwards with
+`uv run python scripts/generate_testdata.py`.
 
 The remaining tests (T1-T4) are reproduced with the prepared HTTP
 requests in the `bruno/` collection (see `bruno/README.md`), following

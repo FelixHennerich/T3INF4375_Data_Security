@@ -15,6 +15,7 @@
 # runtime audit artifacts (log + anchor are WORM-style state, regenerated per test run)
 /GridVault/audit_trail.log
 /GridVault/audit_anchor/
+/GridVault/backups/
 
 *__pycache__
 
