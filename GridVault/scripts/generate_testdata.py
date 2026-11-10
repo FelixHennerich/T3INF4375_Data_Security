@@ -24,7 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from gridvault.config import settings
 from gridvault.db import Base, HourlyReading, MeteringPoint, Tenant, User
 from gridvault.services import crypto
-from gridvault.services.keys import KeyServiceError, create_master_key, get_master_key
+from gridvault.services.keys import (
+    KeyServiceError,
+    create_hmac_key,
+    create_master_key,
+    get_master_key,
+)
 
 DAY = datetime(2026, 10, 1, 0, 0)  # the one full day every MP carries (naive)
 
@@ -78,6 +83,13 @@ async def generate(database_url: str | None = None, key_dir: Path | str | None =
             print(f"[keys] created missing master key for {code}")
         except KeyServiceError:
             pass  # key already exists - keep it, it protects existing data
+    # HMAC pseudonym keys (M7): separate from the master keys on purpose.
+    for code in TENANTS:
+        try:
+            create_hmac_key(code, key_dir=key_dir)
+            print(f"[keys] created missing HMAC key for {code}")
+        except KeyServiceError:
+            pass
     master_keys = {code: get_master_key(code, key_dir=key_dir) for code in TENANTS}
 
     hasher = PasswordHasher()

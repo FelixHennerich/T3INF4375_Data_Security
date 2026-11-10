@@ -1,10 +1,16 @@
+import hashlib
+import hmac as hmac_lib
+import json as json_lib
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gridvault.db import HourlyReading, MeteringPoint, Tenant
+from gridvault.config import settings
+from gridvault.db import AnalysisExport, HourlyReading, MeteringPoint, Tenant
 from gridvault.services import crypto
 from gridvault.services.audit import get_audit, user_pseudonym
-from gridvault.services.keys import get_master_key
+from gridvault.services.keys import get_hmac_key, get_master_key
 from gridvault.services.sessions import (
     CurrentSession,
     is_expired,
@@ -47,6 +53,20 @@ class GatewayDenied(Exception):
         self.status = _REASON_STATUS.get(reason, 403)
         self.client_message = GENERIC_DENIAL_MESSAGE
         super().__init__(GENERIC_DENIAL_MESSAGE)
+
+
+class CohortTooSmall(Exception):
+    """Small-cell rejection (A3): the cohort has n < k metering points.
+
+    Unlike authorization denials, the task REQUIRES the response to state
+    n and k - the analyst needs to know how far the cohort is below the
+    threshold (n and k are cohort sizes, not personal data).
+    """
+
+    def __init__(self, n: int, k: int) -> None:
+        self.n = n
+        self.k = k
+        super().__init__(f"cohort too small: n={n} < k={k}")
 
 
 def _deny(
@@ -342,6 +362,185 @@ async def list_hourly_readings(
         {"timestamp": reading.timestamp.isoformat(), "kwh": value}
         for reading, value in zip(readings, values)
     ]
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="success",
+        reason="authorized",
+    )
+    return result
+
+
+async def _cohort(
+    db: AsyncSession, current: CurrentSession, plz: str
+) -> list[MeteringPoint]:
+    """Cohort = all metering points of one PLZ, scoped to the caller's
+    tenant only (steps 3+4 for a cohort collapse into the query scope:
+    foreign-tenant points are never part of any cohort the caller sees)."""
+    rows = await db.execute(
+        select(MeteringPoint)
+        .where(
+            MeteringPoint.tenant_id == current.tenant_id,
+            MeteringPoint.plz == plz,
+        )
+        .order_by(MeteringPoint.mp_id)
+    )
+    return list(rows.scalars().all())
+
+
+def _require_cohort_size(
+    current: CurrentSession,
+    mps: list[MeteringPoint],
+    *,
+    action: str,
+    object_ref: str,
+    k: int,
+) -> None:
+    """Small-cell protection (A3): cohorts with n < k are rejected WITH
+    disclosure of n and k (task wording), after being audited."""
+    n = len(mps)
+    if n >= k:
+        return
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="denied",
+        reason="cohort_too_small",
+    )
+    raise CohortTooSmall(n, k)
+
+
+def _pseudonym(tenant_code: str, mp_id: str) -> str:
+    """HMAC-SHA256 over the metering point ID with the per-tenant
+    pseudonym key (NOT the master key): stable across exports, but not
+    guessable without the key. A plain SHA-256 would be reversible by
+    simply guessing metering point IDs (rainbow table) - noted for B2.
+    """
+    key = get_hmac_key(tenant_code)
+    return hmac_lib.new(key, mp_id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+async def cohort_hourly_sum(
+    db: AsyncSession, token: str | None, plz: str
+) -> dict:
+    """Hourly cohort sum for the Netzanalyst role (A3, B4/T3).
+
+    Output is ONLY the hourly sum over the whole cohort - never names,
+    never single values of a household (single values stay inside this
+    function).
+    """
+    action = "read_cohort_hourly_sum"
+    object_ref = f"plz:{plz}"
+    k = settings.cohort_k
+
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"netzanalyst"},
+        object_ref=object_ref,
+    )
+    mps = await _cohort(db, current, plz)
+    _require_cohort_size(current, mps, action=action, object_ref=object_ref, k=k)
+
+    # Step 5: decrypt every member with context check, step 6: aggregate
+    # per hour. Individual household values never leave this function.
+    sums: dict[object, float] = {}
+    for mp in mps:
+        readings, values = await _decrypt_hourly(
+            db, current, current.tenant_code, mp.mp_id, mp.id, action
+        )
+        for reading, value in zip(readings, values):
+            sums[reading.timestamp] = sums.get(reading.timestamp, 0.0) + value
+
+    result = {
+        "plz": plz,
+        "n": len(mps),
+        "k": k,
+        "hourly_sums": [
+            {"timestamp": ts.isoformat(), "sum_kwh": round(v, 3)}
+            for ts, v in sorted(sums.items())
+        ],
+    }
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="success",
+        reason="authorized",
+    )
+    return result
+
+
+async def export_cohort(
+    db: AsyncSession, token: str | None, plz: str
+) -> dict:
+    """Pseudonymized cohort export for the analysis environment (A3).
+
+    Replaces metering point IDs with HMAC pseudonyms (per-tenant key,
+    NOT the master key). The export row carries a retention date for
+    the M9 deletion run. The small-cell rule applies here too: a small
+    cohort export would enable exactly the re-identification the sum
+    queries prevent.
+    """
+    action = "export_cohort"
+    object_ref = f"plz:{plz}"
+    k = settings.cohort_k
+
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"netzanalyst"},
+        object_ref=object_ref,
+    )
+    mps = await _cohort(db, current, plz)
+    _require_cohort_size(current, mps, action=action, object_ref=object_ref, k=k)
+
+    series = []
+    for mp in mps:
+        _readings, values = await _decrypt_hourly(
+            db, current, current.tenant_code, mp.mp_id, mp.id, action
+        )
+        series.append(
+            {
+                "pseudonym": _pseudonym(current.tenant_code, mp.mp_id),
+                "hourly_kwh": [round(v, 3) for v in values],
+            }
+        )
+
+    payload = {"plz": plz, "pseudonymized_series": series}
+    now = datetime.now(UTC).replace(tzinfo=None)
+    export_row = AnalysisExport(
+        tenant_id=current.tenant_id,
+        plz=plz,
+        created_by_user_id=current.user_id,
+        created_at=now,
+        retention_until=now + timedelta(days=settings.export_retention_days),
+        payload=json_lib.dumps(payload).encode("utf-8"),
+    )
+    db.add(export_row)
+    await db.commit()
+
+    result = {
+        "export_id": export_row.id,
+        "plz": plz,
+        "n": len(mps),
+        "k": k,
+        "created_at": now.isoformat(),
+        "retention_until": export_row.retention_until.isoformat(),
+        "pseudonymized_series": series,
+    }
 
     get_audit().log_action(
         tenant=current.tenant_code,

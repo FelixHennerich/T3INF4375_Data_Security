@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from gridvault.database import init_db
 from gridvault.routers import admin, analysis, auth, metering, outages
 from gridvault.services.crypto import IntegrityViolation
-from gridvault.services.gateway import GatewayDenied
+from gridvault.services.gateway import CohortTooSmall, GatewayDenied
 
 
 @asynccontextmanager
@@ -23,6 +23,16 @@ async def gateway_denied_handler(_: Request, exc: GatewayDenied) -> JSONResponse
     """Every authorization denial answers with the SAME generic message;
     the specific reason is reserved for the audit trail (A3/A5)."""
     return JSONResponse(status_code=exc.status, content={"detail": exc.client_message})
+
+
+@app.exception_handler(CohortTooSmall)
+async def cohort_too_small_handler(_: Request, exc: CohortTooSmall) -> JSONResponse:
+    """Small-cell rejection (A3/T3): the task REQUIRES the response to
+    disclose n and k - unlike other denials this one is not generic."""
+    return JSONResponse(
+        status_code=403,
+        content={"detail": "cohort too small (k-anonymity)", "n": exc.n, "k": exc.k},
+    )
 
 
 @app.exception_handler(IntegrityViolation)

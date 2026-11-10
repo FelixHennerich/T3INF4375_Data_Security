@@ -75,3 +75,30 @@ def get_master_key(tenant_code: str, key_dir: Path | str | None = None) -> bytes
     if len(key) != _MASTER_KEY_BYTES:
         raise KeyServiceError(f"master key for {tenant_code!r} has wrong length")
     return key
+
+
+def _hmac_key_dir(key_dir: Path | str | None) -> Path | str:
+    # Tests pass an isolated key_dir for the master keys; the HMAC keys
+    # then live next to it so they stay inside the same sandbox.
+    if key_dir is None:
+        return settings.hmac_key_dir
+    return Path(key_dir).parent / "hmac_keys"
+
+
+def create_hmac_key(
+    tenant_code: str, key_dir: Path | str | None = None, *, overwrite: bool = False
+) -> bytes:
+    """Create the per-tenant HMAC pseudonym key (A3 analysis export).
+
+    Deliberately a SEPARATE key from the master key: the analysis
+    environment may learn pseudonyms, but must never be able to unwrap
+    ciphertexts or derive the encryption key material.
+    """
+    return create_master_key(
+        tenant_code, key_dir=_hmac_key_dir(key_dir), overwrite=overwrite
+    )
+
+
+def get_hmac_key(tenant_code: str, key_dir: Path | str | None = None) -> bytes:
+    """Return the per-tenant HMAC pseudonym key (separate from the master)."""
+    return get_master_key(tenant_code, key_dir=_hmac_key_dir(key_dir))

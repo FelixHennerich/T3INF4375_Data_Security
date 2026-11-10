@@ -9,6 +9,7 @@ _TEST_ROOT = Path(tempfile.mkdtemp(prefix="gridvault-pytest-"))
 
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TEST_ROOT / 'test.db'}"
 os.environ["KEY_DIR"] = str(_TEST_ROOT / "keys")
+os.environ["HMAC_KEY_DIR"] = str(_TEST_ROOT / "hmac_keys")
 os.environ["AUDIT_LOG_PATH"] = str(_TEST_ROOT / "audit_trail.log")
 os.environ["AUDIT_ANCHOR_DIR"] = str(_TEST_ROOT / "audit_anchor")
 
