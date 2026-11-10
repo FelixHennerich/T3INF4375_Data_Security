@@ -23,5 +23,9 @@ class Settings(BaseSettings):
 
     export_retention_days: int = 90
 
+    # Outages
+    grant_validity_minutes: int = 30
+    outage_reason_min_length: int = 20
+
 
 settings = Settings()

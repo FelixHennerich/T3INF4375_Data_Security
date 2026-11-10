@@ -7,7 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gridvault.config import settings
-from gridvault.db import AnalysisExport, HourlyReading, MeteringPoint, Tenant
+from gridvault.db import (
+    AnalysisExport,
+    ApprovalRequest,
+    HourlyReading,
+    MeteringPoint,
+    Tenant,
+)
 from gridvault.services import crypto
 from gridvault.services.audit import get_audit, user_pseudonym
 from gridvault.services.keys import get_hmac_key, get_master_key
@@ -26,6 +32,7 @@ TARIFF_PRICES_EUR = {
 }
 
 MASKED_PROFILE = "[NICHT FREIGEGEBEN]"
+MASKED_NAME = "[HIDDEN]"  # A4: segment read masks customer names
 
 GENERIC_DENIAL_MESSAGE = "Access denied"
 
@@ -38,6 +45,9 @@ _REASON_STATUS = {
     "not_own_meter": 403,
     "object_not_found": 403,
     "no_valid_grant": 403,  # A4/M8: Störungsdienst without/without expired grant
+    "grant_expired": 403,  # A4/M8: grant existed but the validity window is over
+    "four_eyes_violation": 403,  # A4: own request cannot be approved by the requester
+    "request_not_open": 403,  # A4: only open requests can be granted
 }
 
 
@@ -541,6 +551,277 @@ async def export_cohort(
         "retention_until": export_row.retention_until.isoformat(),
         "pseudonymized_series": series,
     }
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="success",
+        reason="authorized",
+    )
+    return result
+
+
+async def _load_request(
+    db: AsyncSession, request_id: int
+):
+    """Approval request + owning tenant code, or None."""
+    stmt = (
+        select(ApprovalRequest, Tenant)
+        .join(Tenant, Tenant.id == ApprovalRequest.tenant_id)
+        .where(ApprovalRequest.id == request_id)
+    )
+    return (await db.execute(stmt)).first()
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+async def create_outage_request(
+    db: AsyncSession,
+    token: str | None,
+    *,
+    plz: str,
+    ticket_number: str,
+    reason: str,
+) -> dict:
+    """A4 step 1: the Störungsdienst requests access to one segment.
+
+    Request and free-text reason live ONLY in the ticket system
+    (ApprovalRequest table) - the audit trail records the ticket
+    reference, never the reason text (A4 + A8).
+    """
+    action = "request_outage_access"
+    object_ref = f"ticket:{ticket_number}"
+
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"stoerungsdienst"},
+        object_ref=object_ref,
+    )
+    row = ApprovalRequest(
+        requesting_user_id=current.user_id,
+        tenant_id=current.tenant_id,
+        plz=plz,
+        ticket_number=ticket_number,
+        reason=reason,
+        state="offen",
+        created_at=_now(),
+    )
+    db.add(row)
+    await db.commit()
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,  # ticket reference only - no reason text
+        result="success",
+        reason="request_created",
+    )
+    return {
+        "request_id": row.id,
+        "state": row.state,
+        "plz": plz,
+        "ticket_number": ticket_number,
+    }
+
+
+async def list_outage_requests(db: AsyncSession, token: str | None) -> list[dict]:
+    """A4 step 2a: the Leitstelle sees the OPEN requests of its own
+    Stadtwerk. This is the protected ticket-view: it shows the reason
+    (needed to judge the request). The Leitstelle itself has NO data
+    access - neither here nor anywhere else."""
+    action = "list_outage_requests"
+    object_ref = "outage_list"
+
+    current = await authorize(
+        db, token, action=action, allowed_roles={"leitstelle"}, object_ref=object_ref
+    )
+    rows = (
+        (
+            await db.execute(
+                select(ApprovalRequest)
+                .where(
+                    ApprovalRequest.tenant_id == current.tenant_id,
+                    ApprovalRequest.state == "offen",
+                )
+                .order_by(ApprovalRequest.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="success",
+        reason="authorized",
+    )
+    return [
+        {
+            "request_id": row.id,
+            "plz": row.plz,
+            "ticket_number": row.ticket_number,
+            "requested_by": user_pseudonym(row.requesting_user_id),
+            "reason": row.reason,  # ticket system view - never the audit log
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in rows
+    ]
+
+
+async def grant_outage_request(
+    db: AsyncSession, token: str | None, request_id: int
+) -> dict:
+    """A4 step 2b: the Leitstelle grants - four-eyes principle.
+
+    Requester and approver must be different persons; the grant is valid
+    only for exactly the requested segment and only for the configured
+    window (30 minutes default, shortened for the B4 test via config).
+    """
+    action = "grant_outage_access"
+
+    row = await _load_request(db, request_id)
+    object_ref = f"ticket:{row[0].ticket_number if row else 'unknown'}"
+
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"leitstelle"},
+        object_ref=object_ref,
+        object_tenant=row[1].code if row else None,
+    )
+    if not row:
+        _deny(current, action=action, object_ref=object_ref, reason="object_not_found")
+    request_row, _tenant = row
+
+    # Step 4: the grant itself is the object reference check - only an
+    # open request can be granted, and only by a DIFFERENT person.
+    if request_row.state != "offen":
+        _deny(current, action=action, object_ref=object_ref, reason="request_not_open")
+    if request_row.requesting_user_id == current.user_id:
+        _deny(
+            current, action=action, object_ref=object_ref, reason="four_eyes_violation"
+        )
+
+    request_row.state = "genehmigt"
+    request_row.granted_by_user_id = current.user_id
+    request_row.valid_until = _now() + timedelta(minutes=settings.grant_validity_minutes)
+    await db.commit()
+
+    get_audit().log_action(
+        tenant=current.tenant_code,
+        user=user_pseudonym(current.user_id),
+        role=current.role,
+        action=action,
+        object_ref=object_ref,
+        result="success",
+        reason="grant_issued",
+    )
+    return {
+        "request_id": request_row.id,
+        "state": request_row.state,
+        "plz": request_row.plz,
+        "ticket_number": request_row.ticket_number,
+        "valid_until": request_row.valid_until.isoformat(),
+    }
+
+
+async def _grant_reason(
+    db: AsyncSession, current: CurrentSession, plz: str
+) -> str | None:
+    """None if the caller holds a valid, non-expired grant for EXACTLY
+    this segment; otherwise the audit reason code for the denial."""
+    rows = (
+        (
+            await db.execute(
+                select(ApprovalRequest).where(
+                    ApprovalRequest.requesting_user_id == current.user_id,
+                    ApprovalRequest.tenant_id == current.tenant_id,
+                    ApprovalRequest.plz == plz,
+                    ApprovalRequest.state == "genehmigt",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return "no_valid_grant"
+    now = _now()
+    if any(row.valid_until is not None and row.valid_until >= now for row in rows):
+        return None
+    return "grant_expired"
+
+
+async def read_outage_segment(
+    db: AsyncSession, token: str | None, plz: str
+) -> list[dict]:
+    """A4 step 3: segment read for the Störungsdienst - only with a
+    valid, non-expired grant for exactly this segment.
+
+    Output per metering point: ID, PLZ, last reading; the customer name
+    is masked as [HIDDEN] (and never decrypted at all here).
+    """
+    action = "read_outage_segment"
+    object_ref = f"plz:{plz}"
+
+    current = await authorize(
+        db,
+        token,
+        action=action,
+        allowed_roles={"stoerungsdienst"},
+        object_ref=object_ref,
+    )
+    # Step 4: object reference is the granted segment (four-eyes grant).
+    grant_reason = await _grant_reason(db, current, plz)
+    if grant_reason is not None:
+        _deny(current, action=action, object_ref=object_ref, reason=grant_reason)
+
+    # Steps 3+6: own tenant only; names are not even decrypted.
+    mps = (
+        (
+            await db.execute(
+                select(MeteringPoint)
+                .where(
+                    MeteringPoint.tenant_id == current.tenant_id,
+                    MeteringPoint.plz == plz,
+                )
+                .order_by(MeteringPoint.mp_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    result = []
+    for mp in mps:
+        readings, values = await _decrypt_hourly(
+            db, current, current.tenant_code, mp.mp_id, mp.id, action
+        )
+        result.append(
+            {
+                "mp_id": mp.mp_id,
+                "plz": plz,
+                "name": MASKED_NAME,
+                "last_reading": {
+                    "timestamp": readings[-1].timestamp.isoformat(),
+                    "kwh": values[-1],
+                },
+            }
+        )
 
     get_audit().log_action(
         tenant=current.tenant_code,
