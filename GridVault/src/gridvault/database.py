@@ -5,6 +5,8 @@ creates all tables. Import the session factory here; the models live in
 gridvault.db.
 """
 
+from collections.abc import AsyncIterator
+
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -23,3 +25,9 @@ async def init_db() -> None:
     """Create all tables if they do not exist yet (idempotent startup call)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def get_db() -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency yielding a database session per request."""
+    async with SessionFactory() as session:
+        yield session

@@ -15,5 +15,7 @@ class Settings(BaseSettings):
     audit_log_path: str = "audit_trail.log"
     audit_anchor_dir: str = "audit_anchor"
 
+    session_ttl_minutes: int = 30
+
 
 settings = Settings()
