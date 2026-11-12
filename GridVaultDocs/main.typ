@@ -22,10 +22,10 @@
   university: "Duale Hochschule Baden-Württemberg",
   university-location: "Stuttgart",
   university-short: "DHBW",
+  appendix: [#include "chapters/99_Anhang.typ"],
+
   // for more options check the package documentation (https://typst.app/universe/package/clean-dhbw)
 )
 
 
 #include "chapters/01_Einleitung.typ"
-
-
