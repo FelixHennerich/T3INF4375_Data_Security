@@ -28,4 +28,10 @@
 )
 
 
-#include "chapters/01_Einleitung.typ"
+#include "chapters/01_ArchitekturAbgleich.typ"
+#include "chapters/02_Schutzbedarf.typ"
+#include "chapters/03_CloudBetrieb.typ"
+#include "chapters/04_Testprotokolle.typ"
+#include "chapters/05_Zweck.typ"
+#include "chapters/06_Loeschung.typ"
+#include "chapters/07_EUHosting.typ"
