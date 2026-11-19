@@ -25,4 +25,24 @@ Der stündliche Lastgang ist wesentlich sensibler da er auf genaue Gewohnheitsmu
 
 == Re-Identifikation trotz k-Anonymität
 
+Die Re-Identifikation ist bei einer frei wählbaren Kohortenkonstellation
+durch einfache Subtraktion möglich.
+
+Angenommen es gibt: \
+*Abfrage $A_1$* 
+` ∈ {"SWN-001", "SWN-002", "SWN-003", "SWN-004"}`\
+*Abfrage $A_2$* ` ∈ {"SWN-002", "SWN-003", "SWN-004"}`\
+
+Die Bedingung `n ≥ k` ist gilt, da bei $A_1$ $n = 4 >= k = 3$ und bei
+$A_2$ $n = 3 >= k = 3$ gegeben ist. \ 
+
+Durch Subtraktion von $A_1 - A_2$ erhalten wir
+nun die Menge $A_3 =$ `{"SWN-001"}` -> heißt, die Werte eines einzelnen Haushalts.
+
+Die gewählte Implementierung verhindert diese Re-Identifikation dadurch,
+dass Kohorten nicht frei wählbar sind. Es muss immer der Operand *PLZ*
+übergeben werden, über den summiert wird. Somit sind alle einer PLZ
+enthalten, und es gibt kein Paar von zulässigen Abfragen, bei denen eine
+Kohorte eine echte Teilmenge der anderen ist.
+
 == Gegenmaßnahmen
