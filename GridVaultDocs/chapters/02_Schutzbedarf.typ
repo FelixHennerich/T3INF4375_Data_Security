@@ -46,3 +46,11 @@ enthalten, und es gibt kein Paar von zulässigen Abfragen, bei denen eine
 Kohorte eine echte Teilmenge der anderen ist.
 
 == Gegenmaßnahmen
+
+*1. Feste Kohorten*
+
+Die Summation wird vom System vorgegeben (z. B. immer gesamte PLZ-Gruppen, wie implementiert), sodass ein Analyst keine eigenen Zählpunkt-Mengen kombinieren und keine zwei Mengen mit nur einem Haushalt Unterschied erzeugen kann. Dies hat praktisch keine auswirkung auf die grobe Netzplanung. Nur feinere räumliche Analysen werden eingeschränkt.
+
+*2. Abfragebudget*
+
+Jeder Analyst erhält ein begrenztes Kontingent an Abfragen über dasselbe Gebiet/Zeitfenster, wodurch theoretisch keine systematischen Abfragen möglich sind. Allerdings ist es möglich die Ergebnisse zwischenzuspeichern, bis das Kontingent wieder frei ist um weitere Abfragen zu starten. Der Nutzen ist also sehr begrenzt.
