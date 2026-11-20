@@ -31,6 +31,8 @@ caption: [ Shared Responsibility in PaaS],
 
 == Wer hat den Schlüssel?
 
+Cloud-Native Keys verwaltet der Anbieter komplett selbst, bei BYOK importiert der Kunde seinen Schlüssel in die HSMs des Anbieters, bei HYOK bleibt der Schlüssel dauerhaft in Kundenhand. Die kundenverwalteten Varianten schützen alle Daten im Ruhezustand, da ein Plattform-Administrator ohne Schlüsselmaterial weder Chiffrate lesen noch das Crypto-Shredding eines Löschverlangens rückgängig machen kann. Nicht geschützt ist die Verarbeitung selbst, denn das Gateway hält Name, Adresse und Stundenwerte bei jeder Abfrage im Klartext im Arbeitsspeicher. Im Arbeitsspeicher gilt: Data in Use kann nur durch Laufzeithärtung, nicht durch Schlüsselverwahrung geschützt werden.
+
 == Public, Private oder Hybrid
 
 == Audit-Trail in der Cloud
