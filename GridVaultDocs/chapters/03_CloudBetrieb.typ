@@ -35,4 +35,8 @@ Cloud-Native Keys verwaltet der Anbieter komplett selbst, bei BYOK importiert de
 
 == Public, Private oder Hybrid
 
+In der Public Cloud können unter anderem die skalierbare API sowie das Support und Ticket System betrieben werden. Entscheidend ist dabei, dass ausschließlich anonymisierte Daten verarbeitet werden dürfen. Dies betrifft insbesondere die Aggregationen, etwa die Kohortenabfragen und die aggregierten Studensummen je Postleitzahlengebiet.
+
+Ein rein auf die Public Cloud beschränktes Modell ist jedoch nicht ausreichend, sodass ein hybrides Betriebsmodell notwendig ist. Der Schlüsseldienst inklusive der Hauptschlüssel, der Anker des Audit Trails sowie die Datenbank mit den personenbezogenen Lastgängen sollten in einer Private Cloud oder einer On Premise Lösung betrieben werden, da in diesen Komponenten auch Werte im Klartext im Arbeitsspeicher verarbeitet werden.
+
 == Audit-Trail in der Cloud
