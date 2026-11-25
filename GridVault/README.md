@@ -73,55 +73,82 @@ in this repository.
 
 ## Reproducing the B4 tests
 
-With the server running (`uv run fastapi dev`), each test is one command
-(Bruno collection: open `bruno/`, select environment `Localhost`).
+Every B4 test is a standalone console script in `test/` - one command
+each, no server process needed (the app runs in-process against the `.env`
+environment). Each script prints every step, the matching audit entries and
+a PASS/FAIL summary; exit code 0 means every check passed. Run after
+`scripts/generate_testdata.py` so the dataset is canonical. T4 removes
+leftover granted tickets first, T5 and T6 restore their tampering - a
+protocol run leaves dataset and audit chain intact.
 
-### T1 - login wrong then correct (Bruno)
+| Test | Command | Expected (B4) |
+| ---- | ------- | -------------- |
+| T1 | `uv run python test/t1_login.py` | 401 ohne Hinweis auf Existenz, dann 200 mit Rolle und Stadtwerk, beides im Audit |
+| T2 | `uv run python test/t2_abrechnung.py` | (a) Summe + Betrag, Lastgang maskiert; (b)/(c) abgelehnt |
+| T3 | `uv run python test/t3_kohorte.py` | Kleinzelle mit n und k abgelehnt, Stundensumme, Export nur Pseudonyme |
+| T4 | `uv run python test/t4_freigabe.py` | abgelehnt / offen / genehmigt / Wert sichtbar, Name maskiert / abgelehnt / abgelehnt |
+| T5 | `uv run python test/t5_chiffrat_swap.py` | Integritätsverletzung mit Zählpunkt und Zeitstempel, Audit-Eintrag |
+| T6 | `uv run python test/t6_audit_kette.py` | (a) Kettenbruch mit Zeilenangabe; (b) über den Anker erkannt |
 
-`auth/login_wrong_password` -> 401 without user-existence hint, then
-`auth/login_kunde_swn` -> 200 with role and tenant. Both events appear in
-`audit_trail.log`; verify the chain afterwards (see T6).
-
-### T2 - Abrechnung own / foreign tenant / foreign role (Bruno)
-
-Log in as `abrechnung_swn`, then:
-
-| Request | Expected (B4/T2) |
-| ------- | ---------------- |
-| `metering/get_billing_summary` (SWN-001) | (a) sum + amount, load profile `[NICHT FREIGEGEBEN]` |
-| `metering/get_other_tenant_swb` (SWB-001) | (b) denied |
-| `analysis/hourly_sum_ok` as Abrechnung | (c) denied (Netzanalyst action, role_not_allowed) |
-
-### T3 - cohort k-cell protection and pseudonym export (Bruno)
-
-Log in as `netzanalyst_swn`, then `analysis/hourly_sum_ok` (PLZ 71543, n=3:
-hourly sum), `analysis/hourly_sum_small_cell` (PLZ 71560: rejected with n=1
-and k=3), `analysis/export` (only HMAC pseudonyms).
-
-### T4 - outage approval chain (Bruno)
-
-`login_stoerung_swn` -> `segment_read_without_grant` (denied) ->
-`create_approval_request` (open; the created request_id is written into the
-environment automatically) -> `login_leitstelle_swn` -> `list_open_requests`
--> `grant_approval` (four-eyes, 30 min validity) -> `login_stoerung_swn` ->
-`segment_read_in_segment` (value visible, name `[HIDDEN]`) -> change PLZ to
-`71560` in the request URL (denied, outside the segment) -> after the grant
-window (shorten via `GRANT_VALIDITY_MINUTES` in `.env`) denied again.
-
-### T5 - swapped ciphertexts (script)
+All six in one sweep, stopping at the first failure:
 
 ```bash
-uv run python scripts/t5_swap_and_read.py
+for t in test/t1_login.py test/t2_abrechnung.py test/t3_kohorte.py \
+         test/t4_freigabe.py test/t5_chiffrat_swap.py test/t6_audit_kette.py; do
+  uv run python "$t" || break
+done
 ```
 
-Swaps the `enc_value` blobs of two hourly rows of `SWN-001` directly in the
-database, reads the metering point as Abrechnung -> 409 integrity violation
-naming metering point and timestamp, prints the audit entry and restores the
-ciphertexts. B4 reasoning why AEAD alone does not detect the relocation of
-two valid ciphertexts (only the AAD context binding does): see the script
-docstring.
+The same flows can also be run interactively with the Bruno collection in
+`bruno/` (server: `uv run fastapi dev`, environment `Localhost`).
 
-### T6 - audit chain tampering (script)
+### T1 - login wrong then correct
+
+`GET`/`POST` flow of the script: wrong password -> 401 without
+user-existence hint (identical to an unknown user), then correct password
+-> 200 with role and tenant. Both events appear in `audit_trail.log`.
+
+### T2 - Abrechnung own / foreign tenant / foreign role
+
+Log in as `abrechnung_swn`, then: (a) `GET /metering-points/SWN-001` ->
+sum 18.17 kWh + amount, load profile `[NICHT FREIGEGEBEN]`; (b)
+`GET /metering-points/SWB-001` -> denied; (c) `GET /analysis/plz/71543/hourly-sum`
+as Abrechnung -> denied (Netzanalyst action, role_not_allowed). The true
+denial reasons appear only in the audit trail.
+
+### T3 - cohort k-cell protection and pseudonym export
+
+Log in as `netzanalyst_swn`: PLZ 71543 (n=3) -> hourly sums, PLZ 71560
+(n=1) -> rejected with n and k=3, `POST /analysis/plz/71543/export` ->
+only HMAC pseudonyms.
+
+### T4 - outage approval chain
+
+Störungsdienst reads without grant (denied) -> creates the approval
+request (open) -> Leitstelle lists and grants (four-eyes, 30 min
+validity) -> Störungsdienst reads inside the segment (value visible,
+name `[HIDDEN]`) -> reads outside the segment (denied) -> after expiry
+(denied). The free-text reason stays in the ticket system; the audit
+trail carries the ticket reference only.
+
+### T5 - swapped ciphertexts (and why AEAD alone is not enough)
+
+`uv run python test/t5_chiffrat_swap.py` swaps the `enc_value` blobs of
+two hourly rows of `SWN-001` directly in the database, reads the metering
+point as Abrechnung -> 409 integrity violation naming metering point and
+timestamp, prints the audit entry and restores the ciphertexts.
+
+Why authenticated encryption alone does not detect the relocation: both
+GCM tags still verify in their new location, no single character was
+modified - only the context binding (Weg b: context as AAD) ties each
+ciphertext to its metering point and timestamp, so the read fails. Full
+reasoning: docstring of `test/t5_chiffrat_swap.py`.
+
+### T6 - audit chain tampering (manual variant)
+
+`uv run python test/t6_audit_kette.py` performs both manipulations,
+prints the verification tool output and restores the log. The same can
+be done by hand against the real log:
 
 ```bash
 # intact chain + anchor
@@ -154,11 +181,14 @@ unreadable) -> restores the backup (resurrected rows) -> re-applies the
 deletion run and the key destruction. The script CLEANS the working dataset;
 regenerate afterwards with `scripts/generate_testdata.py`.
 
-## Test suite
+## Tests
+
+The six B4 protocol scripts in `test/` (see above) are the test suite -
+each exits 0 only if every check passes and prints the matching audit
+entries as evidence. Lint:
 
 ```bash
-uv run pytest tests/ -q   # 97 tests: crypto, audit, auth, gateway hardening (A7/A8), deletion, backup semantics
-uv run ruff check src scripts tests
+uv run ruff check src scripts test
 ```
 
 ## Housekeeping
