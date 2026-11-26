@@ -33,6 +33,8 @@ Dieses Modell wurde abschließend zur sprachlichen Überarbeitung des Typst Doku
 
 #pagebreak()
 
+#set page(flipped: true)
+
 == Testprotokolle (B4)
 
 == T1 Login <protocol:login>
@@ -53,14 +55,15 @@ B4/T1 - Login mit falschem und dann korrektem Passwort
     ok   Rolle im Sitzungszustand
     ok   Stadtwerk im Sitzungszustand
     ok   Session-Cookie HttpOnly
-    ok   Ablehnung UND Erfolg im Audit-Trail
+
+
 Audit-Eintraege dieses Tests (audit_trail.log):
-  seq=386 ts=2026-11-25T16:05:27+00:00 tenant=SWN user=u1 role=kunde action=login object=user result=denied reason=password_wrong
-  seq=387 ts=2026-11-25T16:05:28+00:00 tenant=- user=u0 role=unknown action=login object=user result=denied reason=user_unknown
-  seq=388 ts=2026-11-25T16:05:28+00:00 tenant=SWN user=u1 role=kunde action=login object=user result=success reason=credentials_ok
+  seq=519 ts=2026-11-26T08:04:50+00:00 tenant=SWN user=u1 role=kunde action=login object=user result=denied reason=password_wrong
+  seq=520 ts=2026-11-26T08:04:50+00:00 tenant=- user=u0 role=unknown action=login object=user result=denied reason=user_unknown
+  seq=521 ts=2026-11-26T08:04:50+00:00 tenant=SWN user=u1 role=kunde action=login object=user result=success reason=credentials_ok
 
 
-ERGEBNIS: B4/T1 bestanden (8/8 Pruefungen)
+ERGEBNIS: B4/T1 bestanden (7/7 Pruefungen)
 ```
 
 #pagebreak()
@@ -85,6 +88,14 @@ B4/T2 - Abrechnung fragt eigenen / fremden Zählpunkt ab, versucht Rollenwechsel
 [3] (c) Netzanalysten-Aktion als Abrechnung  ->  GET /analysis/plz/71543/hourly-sum
     ok   HTTP 403
     ok   Access denied
+
+
+Audit-Eintraege dieses Tests (audit_trail.log):
+  seq=522 ts=2026-11-26T08:04:52+00:00 tenant=SWN user=u2 role=abrechnung action=login object=user result=success reason=credentials_ok
+  seq=523 ts=2026-11-26T08:04:52+00:00 tenant=SWN user=u2 role=abrechnung action=read_metering_point object=mp:SWN-001 result=success reason=authorized
+  seq=524 ts=2026-11-26T08:04:52+00:00 tenant=SWN user=u2 role=abrechnung action=read_metering_point object=mp:SWB-001 result=denied reason=tenant_mismatch
+  seq=525 ts=2026-11-26T08:04:52+00:00 tenant=SWN user=u2 role=abrechnung action=read_cohort_hourly_sum object=plz:71543 result=denied reason=role_not_allowed
+
 
 ERGEBNIS: B4/T2 bestanden (9/9 Pruefungen)
 ```
@@ -122,6 +133,14 @@ B4/T3 - Netzanalyst: Kohorte n<3 und n>=3, Export
     ok   keine Namen im Export
     Pseudonyme: ['260a7d8b5f09c7a2...', '89b766aee9e8c063...', '3c71615e7e5678dd...']
 
+
+Audit-Eintraege dieses Tests (audit_trail.log):
+  seq=526 ts=2026-11-26T08:04:54+00:00 tenant=SWN user=u3 role=netzanalyst action=login object=user result=success reason=credentials_ok
+  seq=527 ts=2026-11-26T08:04:54+00:00 tenant=SWN user=u3 role=netzanalyst action=read_cohort_hourly_sum object=plz:71560 result=denied reason=cohort_too_small
+  seq=528 ts=2026-11-26T08:04:54+00:00 tenant=SWN user=u3 role=netzanalyst action=read_cohort_hourly_sum object=plz:71543 result=success reason=authorized
+  seq=529 ts=2026-11-26T08:04:54+00:00 tenant=SWN user=u3 role=netzanalyst action=export_cohort object=plz:71543 result=success reason=authorized
+
+
 ERGEBNIS: B4/T3 bestanden (16/16 Pruefungen)
 ```
 
@@ -149,7 +168,7 @@ B4/T4 - Störungsdienst-Freigabekette inkl. ausserhalb/abgelaufen
     Begruendung: Gemeldeter Spannungsabfall im Netzsegment, Pruefung vor Ort erforderlich.
 [4] Freigabe durch die Leitstelle  ->  POST /outages/approval-requests/1/grant
     ok   HTTP 200 - genehmigt (30 Min. Gueltigkeit)
-    Antwort: {"request_id":1,"state":"genehmigt","plz":"71543","ticket_number":"T-2026-4242","valid_until":"2026-11-25T16:35:29.952755"}
+    Antwort: {"request_id":1,"state":"genehmigt","plz":"71543","ticket_number":"T-2026-4242","valid_until":"2026-11-26T08:34:56.551718"}
     ok   Login stoerung_swn -> HTTP 200
 [5] Zugriff IM freigegebenen Segment  ->  GET /outages/plz/71543/metering-points
     ok   HTTP 200
@@ -162,6 +181,23 @@ B4/T4 - Störungsdienst-Freigabekette inkl. ausserhalb/abgelaufen
 [7] Zugriff nach Ablauf der Freigabe (Gueltigkeit verkuerzt)
     (Gueltigkeitsfenster im Ticket direkt in die Vergangenheit gezogen)
     ok   HTTP 403
+
+
+Audit-Eintraege dieses Tests (audit_trail.log):
+  seq=530 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u4 role=stoerungsdienst action=login object=user result=success reason=credentials_ok
+  seq=531 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u4 role=stoerungsdienst action=read_outage_segment object=plz:71543 result=denied reason=no_valid_grant
+  seq=532 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u4 role=stoerungsdienst action=request_outage_access object=ticket:T-2026-4242 result=success reason=request_created
+  seq=533 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u4 role=stoerungsdienst action=logout object=session result=success reason=user_logout
+  seq=534 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u5 role=leitstelle action=login object=user result=success reason=credentials_ok
+  seq=535 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u5 role=leitstelle action=list_outage_requests object=outage_list result=success reason=authorized
+  seq=536 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u5 role=leitstelle action=grant_outage_access object=ticket:T-2026-4242 result=success reason=grant_issued
+  seq=537 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u5 role=leitstelle action=logout object=session result=success reason=user_logout
+  seq=538 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u4 role=stoerungsdienst action=login object=user result=success reason=credentials_ok
+  seq=539 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u4 role=stoerungsdienst action=read_outage_segment object=plz:71543 result=success reason=authorized
+  seq=540 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u4 role=stoerungsdienst action=read_outage_segment object=plz:71560 result=denied reason=no_valid_grant
+  seq=541 ts=2026-11-26T08:04:56+00:00 tenant=SWN user=u4 role=stoerungsdienst action=read_outage_segment object=plz:71543 result=denied reason=grant_expired
+
+
 ERGEBNIS: B4/T4 bestanden (13/13 Pruefungen)
 ```
 
@@ -183,8 +219,18 @@ B4/T5 - Integritätstest: vertauschte Chiffrate desselben Zählpunkts
     ok   Zählpunkt in der Meldung
     ok   Zeitstempel in der Meldung
     Antwort: {"detail":"integrity violation: ciphertext does not match key or bound context 'SWN:SWN-001:2026-10-01T07:00:00'"}
+[3] Chiffrate zuruecktauschen
+    ok   Vertauschung rueckgaengig
+    ok   Zählpunkt wieder lesbar
 
-ERGEBNIS: B4/T5 bestanden (5/5 Pruefungen)
+
+Audit-Eintraege dieses Tests (audit_trail.log):
+  seq=542 ts=2026-11-26T08:04:58+00:00 tenant=SWN user=u2 role=abrechnung action=login object=user result=success reason=credentials_ok
+  seq=543 ts=2026-11-26T08:04:58+00:00 tenant=SWN user=u2 role=abrechnung action=read_metering_point object=mp:SWN-001:2026-10-01T07:00:00 result=denied reason=integrity_violation
+  seq=544 ts=2026-11-26T08:04:58+00:00 tenant=SWN user=u2 role=abrechnung action=read_metering_point object=mp:SWN-001 result=success reason=authorized
+
+
+ERGEBNIS: B4/T5 bestanden (7/7 Pruefungen)
 ```
 
 
@@ -198,27 +244,31 @@ B4/T6 - Audit-Trail: mittleren Eintrag löschen / Ende abschneiden
 =================================================================
 
     ok   mindestens 10 Einträge im Audit-Trail
-[1] (a) mittleren Eintrag löschen  ->  Zeile 206 (seq 206) entfernt -> Pruefwerkzeug:
+[1] (a) mittleren Eintrag löschen  ->  Zeile 273 (seq 273) entfernt -> Pruefwerkzeug:
 TAMPERING DETECTED:
-  - CHAIN BREAK at line 206: prev_hash does not match the hash of the previous entry - entry with seq 206 was deleted or reordered before this line
-  - SEQUENCE GAP at line 206: expected seq 206, got 207 - an entry was deleted or reordered
+  - CHAIN BREAK at line 273: prev_hash does not match the hash of the previous entry - entry with seq 273 was deleted or reordered before this line
+  - SEQUENCE GAP at line 273: expected seq 273, got 274 - an entry was deleted or reordered
     ok   Pruefwerkzeug Exit-Code 1
-    ok   Kettenbruch mit Zeilenangabe (Zeile 206)
+    ok   Kettenbruch mit Zeilenangabe (Zeile 273)
 
 [2] Eintrag zurueckspielen -> Pruefwerkzeug:
-OK: chain intact, anchor matches (410 entries)
+OK: chain intact, anchor matches (544 entries)
     ok   Kette wieder intakt (Exit 0)
 
-[3] (b) letzten Eintrag abschneiden  ->  seq 410 entfernt -> Pruefwerkzeug:
+[3] (b) letzten Eintrag abschneiden  ->  seq 544 entfernt -> Pruefwerkzeug:
     ok   Hash-Kette allein erkennt (b) NICHT
 TAMPERING DETECTED:
-  - TRUNCATED TAIL detected via anchor: log ends at seq 409 (line 409), but the anchor records seq 410 - 1 trailing entry was cut off. The chain alone cannot show this: the removed entries took their evidence with them; only the external anchor exposes it.
+  - TRUNCATED TAIL detected via anchor: log ends at seq 543 (line 543), but the anchor records seq 544 - 1 trailing entry was cut off. The chain alone cannot show this: the removed entries took their evidence with them; only the external anchor exposes it.
     ok   Pruefwerkzeug Exit-Code 1
     ok   abschnittenes Ende nur über den ANKER erkannt
 
 [4] Eintrag zurueckspielen -> Pruefwerkzeug:
-OK: chain intact, anchor matches (410 entries)
+OK: chain intact, anchor matches (544 entries)
     ok   Kette wieder intakt (Exit 0)
+
+
+Audit-Eintraege dieses Tests (audit_trail.log):
+  (keine neuen Eintraege)
 
 
 ERGEBNIS: B4/T6 bestanden (8/8 Pruefungen)
