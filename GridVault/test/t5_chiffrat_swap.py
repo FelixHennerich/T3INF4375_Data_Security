@@ -79,6 +79,23 @@ async def main() -> int:
         p.check("Zeitstempel in der Meldung", "2026-10-01T07:00:00" in r.text)
         print(f"    Antwort: {r.text}")
 
+        # Ruecktausch: Protokoll fuehrt zum lesbaren Zustand zurueck,
+        # alle Tests bleiben einzeln reproduzierbar
+        p.step(3, "Chiffrate zuruecktauschen")
+        p.check("Vertauschung rueckgaengig", await swap())
+        r = await client.get(f"/metering-points/{MP_ID}")
+        p.check(
+            "Zählpunkt wieder lesbar",
+            r.status_code == 200 and r.json().get("consumption_sum_kwh", 0) > 0,
+        )
+
+
+    print(f"\n")
+
+    
+    # Audit Trail
+    entries = common.new_audit_entries(snapshot)
+    common.print_audit("Audit-Eintraege dieses Tests", entries)
 
     return p.finish()
 

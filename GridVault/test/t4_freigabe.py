@@ -145,6 +145,14 @@ async def main() -> int:
         r = await client.get(f"/outages/plz/{PLZ}/metering-points")
         p.check("HTTP 403", r.status_code == 403, "403", f"HTTP {r.status_code}")
 
+
+    print(f"\n")
+
+    
+    # Audit Trail
+    entries = common.new_audit_entries(snapshot)
+    common.print_audit("Audit-Eintraege dieses Tests", entries)
+
     return p.finish()
 
 

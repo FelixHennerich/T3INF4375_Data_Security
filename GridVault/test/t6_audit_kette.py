@@ -69,6 +69,7 @@ async def main() -> int:
     if not common.ensure_dataset():
         return 2
     p = common.Protocol("T6", "Audit-Trail: mittleren Eintrag löschen / Ende abschneiden")
+    snapshot = common.audit_snapshot()
 
     # make sure the trail has enough entries for a MIDDLE deletion
     while len(lines()) < MIN_ENTRIES:
@@ -133,7 +134,14 @@ async def main() -> int:
     p.check("Kette wieder intakt (Exit 0)", code == 0, "0", str(code))
     print()
 
+
+    print(f"\n")
+
     
+    # Audit Trail
+    entries = common.new_audit_entries(snapshot)
+    common.print_audit("Audit-Eintraege dieses Tests", entries)
+
     return p.finish()
 
 

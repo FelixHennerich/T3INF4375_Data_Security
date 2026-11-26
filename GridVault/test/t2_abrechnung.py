@@ -25,6 +25,7 @@ async def main() -> int:
     p = common.Protocol(
         "T2", "Abrechnung fragt eigenen / fremden Zählpunkt ab, versucht Rollenwechsel"
     )
+    snapshot = common.audit_snapshot()
 
     async with common.make_client() as client:
         await common.login(p, client, ABRECHNUNG)
@@ -75,6 +76,13 @@ async def main() -> int:
             r.text,
         )
 
+
+    print(f"\n")
+
+    
+    # Audit Trail
+    entries = common.new_audit_entries(snapshot)
+    common.print_audit("Audit-Eintraege dieses Tests", entries)
 
     return p.finish()
 

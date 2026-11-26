@@ -25,6 +25,7 @@ async def main() -> int:
     if not common.ensure_dataset():
         return 2
     p = common.Protocol("T3", "Netzanalyst: Kohorte n<3 und n>=3, Export")
+    snapshot = common.audit_snapshot()
 
     async with common.make_client() as client:
         await common.login(p, client, NETZANALYST)
@@ -77,6 +78,14 @@ async def main() -> int:
         p.check("keine Namen im Export", "Mustermann" not in raw)
         print(f"    Pseudonyme: {[s['pseudonym'][:16] + '...' for s in series]}")
 
+
+
+    print(f"\n")
+
+    
+    # Audit Trail
+    entries = common.new_audit_entries(snapshot)
+    common.print_audit("Audit-Eintraege dieses Tests", entries)
 
     return p.finish()
 
